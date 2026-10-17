@@ -8,7 +8,12 @@ from typing import Optional, List, Dict, Any
 from langchain_openai import OpenAIEmbeddings
 
 from backend.app.core.config import settings
-from backend.app.core.database import get_db_pool
+from backend.app.core.database import (
+    get_db_pool,
+    is_pgvector_available,
+    has_iterative_scan_support,
+    get_pgvector_status,
+)
 from backend.app.schemas.cache import CacheLookupResult, CacheEntryCreate
 
 logger = logging.getLogger("semantic_cache")
@@ -190,29 +195,67 @@ class SemanticCacheService:
             if query_embedding is None:
                 return CacheLookupResult(hit=False)
 
+            use_hnsw = is_pgvector_available() and len(query_embedding) == settings.SEMANTIC_CACHE_EMBEDDING_DIMENSION
+
             async with pool.connection() as conn:
-                # Use PostgreSQL cosine_similarity_array function
-                res = await conn.execute(
-                    """
-                    SELECT id, query_text, response_text, metadata, hit_count,
-                           cosine_similarity_array(embedding, %s) AS similarity
-                    FROM semantic_cache
-                    WHERE user_id = %s
-                      AND model_name = %s
-                      AND embedding_model = %s
-                      AND config_version = %s
-                      AND expires_at > CURRENT_TIMESTAMP
-                    ORDER BY similarity DESC
-                    LIMIT 1
-                    """,
-                    (
-                        query_embedding,
-                        user_id,
-                        target_model,
-                        self.embedding_model,
-                        self.config_version,
-                    ),
-                )
+                if use_hnsw:
+                    max_distance = max(0.0, 1.0 - self.similarity_threshold)
+                    vec_str = f"[{','.join(str(x) for x in query_embedding)}]"
+
+                    # Set transaction-scoped HNSW parameters
+                    await conn.execute(f"SET LOCAL hnsw.ef_search = {settings.SEMANTIC_CACHE_HNSW_EF_SEARCH};")
+                    if has_iterative_scan_support():
+                        await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order';")
+
+                    res = await conn.execute(
+                        """
+                        SELECT id, query_text, response_text, metadata, hit_count,
+                               (1.0 - (embedding_vec <=> %s::vector)) AS similarity
+                        FROM semantic_cache
+                        WHERE user_id = %s
+                          AND model_name = %s
+                          AND embedding_model = %s
+                          AND config_version = %s
+                          AND expires_at > CURRENT_TIMESTAMP
+                          AND (embedding_vec <=> %s::vector) <= %s
+                        ORDER BY embedding_vec <=> %s::vector ASC
+                        LIMIT 1
+                        """,
+                        (
+                            vec_str,
+                            user_id,
+                            target_model,
+                            self.embedding_model,
+                            self.config_version,
+                            vec_str,
+                            max_distance,
+                            vec_str,
+                        ),
+                    )
+                else:
+                    # High-performance array fallback with PL/pgSQL function
+                    res = await conn.execute(
+                        """
+                        SELECT id, query_text, response_text, metadata, hit_count,
+                               cosine_similarity_array(embedding, %s) AS similarity
+                        FROM semantic_cache
+                        WHERE user_id = %s
+                          AND model_name = %s
+                          AND embedding_model = %s
+                          AND config_version = %s
+                          AND expires_at > CURRENT_TIMESTAMP
+                        ORDER BY similarity DESC
+                        LIMIT 1
+                        """,
+                        (
+                            query_embedding,
+                            user_id,
+                            target_model,
+                            self.embedding_model,
+                            self.config_version,
+                        ),
+                    )
+
                 best_match = await res.fetchone()
 
                 if best_match and best_match["similarity"] is not None:
@@ -228,8 +271,9 @@ class SemanticCacheService:
                             (cache_id,),
                         )
                         latency_ms = (time.perf_counter() - start_time) * 1000
+                        search_mode = "HNSW" if use_hnsw else "ARRAY_FALLBACK"
                         logger.info(
-                            f"Semantic cache HIT [id={cache_id}, score={similarity:.4f}, "
+                            f"Semantic cache HIT [{search_mode}, id={cache_id}, score={similarity:.4f}, "
                             f"threshold={self.similarity_threshold}, latency={latency_ms:.2f}ms]"
                         )
                         return CacheLookupResult(
@@ -260,6 +304,7 @@ class SemanticCacheService:
     ) -> Optional[int]:
         """
         Stores an eligible query and response into PostgreSQL semantic cache with retention enforcement.
+        Supports both pgvector and array fallback representations.
         """
         if not self.enabled:
             return None
@@ -298,34 +343,67 @@ class SemanticCacheService:
                     )
 
                 # 2. Insert or update entry
-                res_insert = await conn.execute(
-                    """
-                    INSERT INTO semantic_cache (
-                        user_id, scope, query_text, query_hash, embedding,
-                        response_text, model_name, embedding_model, config_version,
-                        metadata, hit_count, expires_at
+                use_hnsw = is_pgvector_available() and len(entry.embedding) == settings.SEMANTIC_CACHE_EMBEDDING_DIMENSION
+                if use_hnsw:
+                    vec_str = f"[{','.join(str(x) for x in entry.embedding)}]"
+                    res_insert = await conn.execute(
+                        """
+                        INSERT INTO semantic_cache (
+                            user_id, scope, query_text, query_hash, embedding, embedding_vec,
+                            response_text, model_name, embedding_model, config_version,
+                            metadata, hit_count, expires_at
+                        )
+                        VALUES (
+                            %s, %s, %s, %s, %s, %s::vector,
+                            %s, %s, %s, %s,
+                            %s, 0, CURRENT_TIMESTAMP + (%s || ' seconds')::INTERVAL
+                        )
+                        RETURNING id
+                        """,
+                        (
+                            entry.user_id,
+                            entry.scope,
+                            entry.query_text.strip(),
+                            query_hash,
+                            entry.embedding,
+                            vec_str,
+                            entry.response_text.strip(),
+                            target_model,
+                            target_embedding_model,
+                            config_ver,
+                            json.dumps(entry.metadata),
+                            str(ttl),
+                        ),
                     )
-                    VALUES (
-                        %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s,
-                        %s, 0, CURRENT_TIMESTAMP + (%s || ' seconds')::INTERVAL
+                else:
+                    res_insert = await conn.execute(
+                        """
+                        INSERT INTO semantic_cache (
+                            user_id, scope, query_text, query_hash, embedding,
+                            response_text, model_name, embedding_model, config_version,
+                            metadata, hit_count, expires_at
+                        )
+                        VALUES (
+                            %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s,
+                            %s, 0, CURRENT_TIMESTAMP + (%s || ' seconds')::INTERVAL
+                        )
+                        RETURNING id
+                        """,
+                        (
+                            entry.user_id,
+                            entry.scope,
+                            entry.query_text.strip(),
+                            query_hash,
+                            entry.embedding,
+                            entry.response_text.strip(),
+                            target_model,
+                            target_embedding_model,
+                            config_ver,
+                            json.dumps(entry.metadata),
+                            str(ttl),
+                        ),
                     )
-                    RETURNING id
-                    """,
-                    (
-                        entry.user_id,
-                        entry.scope,
-                        entry.query_text.strip(),
-                        query_hash,
-                        entry.embedding,
-                        entry.response_text.strip(),
-                        target_model,
-                        target_embedding_model,
-                        config_ver,
-                        json.dumps(entry.metadata),
-                        str(ttl),
-                    ),
-                )
                 inserted = await res_insert.fetchone()
                 cache_id = inserted["id"] if inserted else None
                 logger.info(f"Stored entry in semantic cache [id={cache_id}, user={entry.user_id[:8]}...]")
@@ -334,6 +412,84 @@ class SemanticCacheService:
         except Exception as e:
             logger.exception(f"Failed to store semantic cache entry: {e}")
             return None
+
+    async def explain_retrieval_query(
+        self,
+        query: str,
+        user_id: str,
+        model_name: Optional[str] = None,
+        custom_pool: Optional[Any] = None,
+    ) -> List[str]:
+        """
+        Executes EXPLAIN (ANALYZE, BUFFERS) on the active retrieval query
+        for diagnostic inspection of index usage, buffer hits, and execution times.
+        """
+        pool = custom_pool or await get_db_pool()
+        query_embedding = await self.get_embedding(query)
+        if query_embedding is None:
+            return ["Failed to generate embedding for query."]
+
+        target_model = model_name or settings.MODEL_NAME
+        use_hnsw = is_pgvector_available() and len(query_embedding) == settings.SEMANTIC_CACHE_EMBEDDING_DIMENSION
+
+        async with pool.connection() as conn:
+            if use_hnsw:
+                max_distance = max(0.0, 1.0 - self.similarity_threshold)
+                vec_str = f"[{','.join(str(x) for x in query_embedding)}]"
+                await conn.execute(f"SET LOCAL hnsw.ef_search = {settings.SEMANTIC_CACHE_HNSW_EF_SEARCH};")
+                sql = """
+                    EXPLAIN (ANALYZE, BUFFERS)
+                    SELECT id, query_text, response_text, metadata, hit_count,
+                           (1.0 - (embedding_vec <=> %s::vector)) AS similarity
+                    FROM semantic_cache
+                    WHERE user_id = %s
+                      AND model_name = %s
+                      AND embedding_model = %s
+                      AND config_version = %s
+                      AND expires_at > CURRENT_TIMESTAMP
+                      AND (embedding_vec <=> %s::vector) <= %s
+                    ORDER BY embedding_vec <=> %s::vector ASC
+                    LIMIT 1
+                """
+                res = await conn.execute(
+                    sql,
+                    (
+                        vec_str,
+                        user_id,
+                        target_model,
+                        self.embedding_model,
+                        self.config_version,
+                        vec_str,
+                        max_distance,
+                        vec_str,
+                    ),
+                )
+            else:
+                sql = """
+                    EXPLAIN (ANALYZE, BUFFERS)
+                    SELECT id, query_text, response_text, metadata, hit_count,
+                           cosine_similarity_array(embedding, %s) AS similarity
+                    FROM semantic_cache
+                    WHERE user_id = %s
+                      AND model_name = %s
+                      AND embedding_model = %s
+                      AND config_version = %s
+                      AND expires_at > CURRENT_TIMESTAMP
+                    ORDER BY similarity DESC
+                    LIMIT 1
+                """
+                res = await conn.execute(
+                    sql,
+                    (
+                        query_embedding,
+                        user_id,
+                        target_model,
+                        self.embedding_model,
+                        self.config_version,
+                    ),
+                )
+            rows = await res.fetchall()
+            return [list(r.values())[0] for r in rows]
 
     async def invalidate(
         self,

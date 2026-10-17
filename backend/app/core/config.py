@@ -50,8 +50,14 @@ class Settings:
     SEMANTIC_CACHE_SIMILARITY_THRESHOLD: float = float(os.getenv("SEMANTIC_CACHE_SIMILARITY_THRESHOLD", "0.88"))
     SEMANTIC_CACHE_TTL_SECONDS: int = int(os.getenv("SEMANTIC_CACHE_TTL_SECONDS", "86400"))  # 24 hours default
     SEMANTIC_CACHE_EMBEDDING_MODEL: str = os.getenv("SEMANTIC_CACHE_EMBEDDING_MODEL", "text-embedding-3-small")
+    SEMANTIC_CACHE_EMBEDDING_DIMENSION: int = int(os.getenv("SEMANTIC_CACHE_EMBEDDING_DIMENSION", "1536"))
     SEMANTIC_CACHE_MAX_ENTRIES_PER_USER: int = int(os.getenv("SEMANTIC_CACHE_MAX_ENTRIES_PER_USER", "500"))
     SEMANTIC_CACHE_CONFIG_VERSION: str = os.getenv("SEMANTIC_CACHE_CONFIG_VERSION", "v1")
+    # pgvector HNSW index tuning parameters
+    SEMANTIC_CACHE_HNSW_M: int = int(os.getenv("SEMANTIC_CACHE_HNSW_M", "16"))
+    SEMANTIC_CACHE_HNSW_EF_CONSTRUCTION: int = int(os.getenv("SEMANTIC_CACHE_HNSW_EF_CONSTRUCTION", "64"))
+    SEMANTIC_CACHE_HNSW_EF_SEARCH: int = int(os.getenv("SEMANTIC_CACHE_HNSW_EF_SEARCH", "40"))
+    SEMANTIC_CACHE_FORCE_ARRAY_FALLBACK: bool = os.getenv("SEMANTIC_CACHE_FORCE_ARRAY_FALLBACK", "false").lower() in ("true", "1", "yes")
 
 
 settings = Settings()

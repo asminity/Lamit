@@ -3,14 +3,18 @@ import json
 from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.types import Command
 
+from backend.app.core.config import settings
 from backend.app.core.database import get_db_pool
 from backend.app.core.security import AuthenticatedUser, get_current_user, verify_thread_ownership
 from backend.app.schemas.chat import ChatStreamRequest, ChatResumeRequest
+from backend.app.schemas.cache import CacheEntryCreate
 from backend.app.services.title_service import async_generate_title_with_ai
+from backend.app.services.semantic_cache import semantic_cache
 from backend.app.graph.engine import get_chatbot
+
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -100,6 +104,18 @@ async def chat_stream(
             (body.thread_id,),
         )
 
+    # 4. Semantic cache lookup
+    cache_result = None
+    if settings.SEMANTIC_CACHE_ENABLED:
+        try:
+            cache_result = await semantic_cache.lookup(
+                query=body.message.strip(),
+                user_id=current_user.user_id,
+                model_name=settings.MODEL_NAME,
+            )
+        except Exception:
+            cache_result = None
+
     config = {
         "configurable": {"thread_id": body.thread_id},
         "metadata": {"thread_id": body.thread_id, "user_id": current_user.user_id},
@@ -112,8 +128,57 @@ async def chat_stream(
         last_tool_name = None
         assistant_persisted = False
         is_interrupted = False
+        used_tools = []
 
         try:
+            # Fast Path: Semantic Cache Hit
+            if cache_result and cache_result.hit and cache_result.cached_response:
+                cached_text = cache_result.cached_response
+                # Stream cached text smoothly
+                chunk_size = 24
+                for i in range(0, len(cached_text), chunk_size):
+                    chunk = cached_text[i : i + chunk_size]
+                    yield f"event: text\ndata: {json.dumps({'content': chunk})}\n\n"
+                    await asyncio.sleep(0.01)
+
+                # Persist turn in chat_messages
+                async with pool.connection() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO chat_messages (thread_id, role, content, tool_name)
+                        VALUES (%s, 'assistant', %s, 'semantic_cache')
+                        """,
+                        (body.thread_id, cached_text),
+                    )
+                    await conn.execute(
+                        "UPDATE chat_threads SET updated_at = CURRENT_TIMESTAMP WHERE thread_id = %s",
+                        (body.thread_id,),
+                    )
+
+                # Synchronize LangGraph state so conversation context remains intact
+                try:
+                    await bot.aupdate_state(
+                        config,
+                        {
+                            "messages": [
+                                HumanMessage(content=body.message.strip()),
+                                AIMessage(content=cached_text),
+                            ]
+                        },
+                    )
+                except Exception:
+                    pass
+
+                # Background AI title generation if needed
+                title_updated = False
+                if current_title in ("New Conversation", "New Chat", ""):
+                    asyncio.create_task(_generate_and_save_title(pool, body.thread_id))
+                    title_updated = True
+
+                yield f"event: done\ndata: {json.dumps({'thread_id': body.thread_id, 'title_updated': title_updated, 'interrupted': False, 'cached': True, 'similarity': cache_result.similarity_score})}\n\n"
+                return
+
+            # Cache Miss: Execute LangGraph pipeline
             async for event in bot.astream_events(
                 {"messages": [HumanMessage(content=body.message.strip())]},
                 config=config,
@@ -134,6 +199,8 @@ async def chat_stream(
                 elif ev_type == "on_tool_start":
                     tool_name = event.get("name")
                     last_tool_name = tool_name
+                    if tool_name:
+                        used_tools.append(tool_name)
                     yield f"event: tool_start\ndata: {json.dumps({'name': tool_name})}\n\n"
 
                 elif ev_type == "on_tool_end":
@@ -168,18 +235,46 @@ async def chat_stream(
                         )
                     assistant_persisted = True
 
+                    # Check eligibility and save to semantic cache asynchronously
+                    if semantic_cache.is_response_cacheable(
+                        tool_names=used_tools,
+                        is_interrupted=is_interrupted,
+                        response_text=final_text,
+                    ):
+                        async def _save_cache_entry():
+                            try:
+                                emb = await semantic_cache.get_embedding(body.message.strip())
+                                if emb:
+                                    await semantic_cache.store(
+                                        CacheEntryCreate(
+                                            user_id=current_user.user_id,
+                                            query_text=body.message.strip(),
+                                            response_text=final_text,
+                                            embedding=emb,
+                                            model_name=settings.MODEL_NAME,
+                                            embedding_model=settings.SEMANTIC_CACHE_EMBEDDING_MODEL,
+                                            config_version=settings.SEMANTIC_CACHE_CONFIG_VERSION,
+                                            metadata={"thread_id": body.thread_id},
+                                        )
+                                    )
+                            except Exception:
+                                pass
+
+                        asyncio.create_task(_save_cache_entry())
+
             # Background AI title generation if needed
             title_updated = False
             if current_title in ("New Conversation", "New Chat", ""):
                 asyncio.create_task(_generate_and_save_title(pool, body.thread_id))
                 title_updated = True
 
-            yield f"event: done\ndata: {json.dumps({'thread_id': body.thread_id, 'title_updated': title_updated, 'interrupted': is_interrupted})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'thread_id': body.thread_id, 'title_updated': title_updated, 'interrupted': is_interrupted, 'cached': False})}\n\n"
 
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'message': 'Streaming failed'})}\n\n"
         finally:
             await release_thread(body.thread_id)
+
 
     return StreamingResponse(
         event_generator(),

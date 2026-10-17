@@ -45,5 +45,14 @@ class Settings:
     # LangGraph Short-Term Memory
     SUMMARY_TRIGGER: int = int(os.getenv("SUMMARY_TRIGGER", "12"))
 
+    # Semantic Cache Settings
+    SEMANTIC_CACHE_ENABLED: bool = os.getenv("SEMANTIC_CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
+    SEMANTIC_CACHE_SIMILARITY_THRESHOLD: float = float(os.getenv("SEMANTIC_CACHE_SIMILARITY_THRESHOLD", "0.88"))
+    SEMANTIC_CACHE_TTL_SECONDS: int = int(os.getenv("SEMANTIC_CACHE_TTL_SECONDS", "86400"))  # 24 hours default
+    SEMANTIC_CACHE_EMBEDDING_MODEL: str = os.getenv("SEMANTIC_CACHE_EMBEDDING_MODEL", "text-embedding-3-small")
+    SEMANTIC_CACHE_MAX_ENTRIES_PER_USER: int = int(os.getenv("SEMANTIC_CACHE_MAX_ENTRIES_PER_USER", "500"))
+    SEMANTIC_CACHE_CONFIG_VERSION: str = os.getenv("SEMANTIC_CACHE_CONFIG_VERSION", "v1")
+
 
 settings = Settings()
+

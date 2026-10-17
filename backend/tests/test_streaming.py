@@ -2,6 +2,12 @@ import asyncio
 import json
 import sys
 import os
+from pathlib import Path
+
+_root = str(Path(__file__).resolve().parent.parent.parent)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 

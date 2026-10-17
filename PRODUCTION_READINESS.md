@@ -189,3 +189,27 @@ cd lamit
 docker-compose up -d --build
 ```
 This automatically boots PostgreSQL, runs migrations, builds the FastAPI backend, and serves the Next.js web frontend.
+
+---
+
+## 6. Semantic Caching Architecture & Verification
+
+The production semantic caching layer reduces LLM latency and costs by caching semantically equivalent queries using PostgreSQL vector math.
+
+### Key Capabilities
+- **PostgreSQL Vector Storage**: Uses vector arrays (`DOUBLE PRECISION[]`) with a native PL/pgSQL `cosine_similarity_array` function for zero external database dependencies.
+- **Two-Tier Lookup**:
+  1. *O(1) Exact Match*: SHA-256 normalized query hash lookup for sub-millisecond retrieval.
+  2. *Cosine Similarity Search*: Vector similarity search returning cached responses when `similarity >= SEMANTIC_CACHE_SIMILARITY_THRESHOLD` (default: `0.88`).
+- **Multi-Tenant Isolation**: Queries and cached responses are strictly scoped by `user_id` to prevent cross-user leakage.
+- **Tool-Dependent Ineligibility**: Queries executing dynamic, time-sensitive tools (weather, stocks, search) or side-effecting operations (Gmail sending, HITL interrupts) are automatically excluded from the cache.
+- **Conversational Memory Sync**: On a cache hit, LangGraph's checkpointer state (`bot.aupdate_state`) is updated with the turn so short-term memory and history summarization remain 100% accurate.
+- **Graceful Fallback**: Any embedding provider failure or database timeout gracefully falls back to the live LangGraph chatbot execution without interrupting the user.
+
+### Verification Matrix
+
+| Test Suite | Command | Result | Scope |
+| :--- | :--- | :--- | :--- |
+| **Semantic Cache Unit & Integration** | `python -u backend/tests/test_semantic_cache.py` | **PASSED** | Cosine similarity math, O(1) exact hash hits, thresholding (0.88), tenant isolation, TTL expiration/invalidation, tool ineligibility, failure fallback, concurrency |
+| **Semantic Cache E2E Streaming** | `python -u backend/tests/test_semantic_cache_e2e.py` | **PASSED** | Full FastAPI `/api/chat/stream` SSE streaming with cache hit fast-path, checkpointer synchronization, PostgreSQL `chat_messages` audit, cross-user isolation |
+

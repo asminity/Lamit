@@ -1,11 +1,16 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { StreamEvent, InterruptData } from "@/lib/types";
+import { InterruptData } from "@/lib/types";
 import { getStreamUrl, resumeInterruptedRun } from "@/lib/api";
 
 interface UseChatStreamOptions {
-  onDone?: (threadId: string, titleUpdated: boolean) => void;
+  onDone?: (
+    threadId: string,
+    titleUpdated: boolean,
+    cached?: boolean,
+    similarity?: number
+  ) => void;
   onError?: (errorMsg: string) => void;
 }
 
@@ -15,6 +20,8 @@ export function useChatStream({ onDone, onError }: UseChatStreamOptions = {}) {
   const [activeTools, setActiveTools] = useState<string[]>([]);
   const [interrupt, setInterrupt] = useState<InterruptData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isCachedHit, setIsCachedHit] = useState<boolean>(false);
+  const [cacheSimilarity, setCacheSimilarity] = useState<number | undefined>(undefined);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -53,32 +60,56 @@ export function useChatStream({ onDone, onError }: UseChatStreamOptions = {}) {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
 
-        for (const block of lines) {
+        for (const block of blocks) {
           const trimmed = block.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          const jsonStr = trimmed.slice(6);
-          try {
-            const event: StreamEvent = JSON.parse(jsonStr);
+          if (!trimmed) continue;
 
-            if (event.type === "text" && event.content) {
-              setStreamingText((prev) => prev + event.content);
-            } else if (event.type === "tool_start" && event.name) {
-              setActiveTools((prev) => Array.from(new Set([...prev, event.name!])));
-            } else if (event.type === "tool_end" && event.name) {
-              setActiveTools((prev) => prev.filter((t) => t !== event.name));
-            } else if (event.type === "interrupt" && event.interrupt) {
-              setInterrupt(event.interrupt);
-            } else if (event.type === "done") {
-              onDone?.(threadId, !!event.title_updated);
-            } else if (event.type === "error" && event.message) {
-              setError(event.message);
-              onError?.(event.message);
+          let eventType = "message";
+          let dataStr = "";
+
+          const lines = trimmed.split("\n");
+          for (const line of lines) {
+            const l = line.trim();
+            if (l.startsWith("event: ")) {
+              eventType = l.slice(7).trim();
+            } else if (l.startsWith("data: ")) {
+              dataStr = l.slice(6).trim();
+            }
+          }
+
+          if (!dataStr) continue;
+
+          try {
+            const payload = JSON.parse(dataStr);
+
+            if (eventType === "text" && payload.content) {
+              setStreamingText((prev) => prev + payload.content);
+            } else if (eventType === "tool_start" && payload.name) {
+              setActiveTools((prev) => Array.from(new Set([...prev, payload.name])));
+            } else if (eventType === "tool_end" && payload.name) {
+              setActiveTools((prev) => prev.filter((t) => t !== payload.name));
+            } else if (eventType === "interrupt" && payload.interrupt) {
+              setInterrupt(payload.interrupt);
+            } else if (eventType === "done") {
+              if (payload.cached) {
+                setIsCachedHit(true);
+                setCacheSimilarity(payload.similarity);
+              }
+              onDone?.(
+                threadId,
+                !!payload.title_updated,
+                payload.cached,
+                payload.similarity
+              );
+            } else if (eventType === "error" && payload.message) {
+              setError(payload.message);
+              onError?.(payload.message);
             }
           } catch {
-            // Ignore partial/malformed chunk
+            // Ignore incomplete / malformed JSON frame
           }
         }
       }
@@ -95,6 +126,8 @@ export function useChatStream({ onDone, onError }: UseChatStreamOptions = {}) {
       setActiveTools([]);
       setInterrupt(null);
       setError(null);
+      setIsCachedHit(false);
+      setCacheSimilarity(undefined);
 
       const controller = new AbortController();
       abortControllerRef.current = controller;
@@ -111,7 +144,6 @@ export function useChatStream({ onDone, onError }: UseChatStreamOptions = {}) {
         await processSSE(response, threadId);
       } catch (err: unknown) {
         if (err instanceof Error && err.name === "AbortError") {
-          // Expected cancellation by user
           return;
         }
         const msg = err instanceof Error ? err.message : "Streaming failed";
@@ -155,6 +187,8 @@ export function useChatStream({ onDone, onError }: UseChatStreamOptions = {}) {
     activeTools,
     interrupt,
     error,
+    isCachedHit,
+    cacheSimilarity,
     startStream,
     resumeStream,
     stopStream,

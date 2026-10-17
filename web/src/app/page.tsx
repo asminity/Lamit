@@ -13,24 +13,34 @@ import {
   logoutUser,
 } from "@/lib/api";
 import { useChatStream } from "@/hooks/useChatStream";
-import { Sidebar } from "@/components/layout";
-import { ChatContainer } from "@/components/chat";
-import { AuthModal } from "@/components/auth";
+import {
+  HeaderCanopy,
+  CommandDeck,
+  ThoughtStream,
+  ArtifactCanvas,
+  ThreadDrawer,
+  AuthPortal,
+} from "@/components/neural";
+import { AlertTriangle } from "lucide-react";
 
 export default function Home() {
   const [threads, setThreads] = useState<ThreadItem[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessageItem[]>([]);
   const [input, setInput] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [threadDrawerOpen, setThreadDrawerOpen] = useState(false);
+  const [canvasOpen, setCanvasOpen] = useState(false);
+  const [activeArtifact, setActiveArtifact] = useState<{ text: string; title: string }>({
+    text: "",
+    title: "Workspace Canvas",
+  });
   const [backendOnline, setBackendOnline] = useState(false);
 
   // Authentication State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [authChecked, setAuthChecked] = useState(false);
 
-  // Load threads for the authenticated user
+  // Load threads
   const loadThreads = useCallback(async () => {
     try {
       const data = await fetchThreads();
@@ -47,7 +57,7 @@ export default function Home() {
     }
   }, []);
 
-  // Check health and authentication on mount
+  // System Health & Session Initialization
   useEffect(() => {
     const init = async () => {
       // 1. Health check
@@ -58,7 +68,7 @@ export default function Home() {
         setBackendOnline(false);
       }
 
-      // 2. Check for redirect query params (e.g. from Google OAuth callback)
+      // 2. Query params check (Google OAuth callback)
       if (typeof window !== "undefined") {
         const urlParams = new URLSearchParams(window.location.search);
         if (urlParams.get("auth") === "success") {
@@ -69,7 +79,7 @@ export default function Home() {
         }
       }
 
-      // 3. Check current user session
+      // 3. User session lookup
       try {
         const user = await fetchCurrentUser();
         setCurrentUser(user);
@@ -83,13 +93,23 @@ export default function Home() {
         }
       } catch {
         setAuthModalOpen(true);
-      } finally {
-        setAuthChecked(true);
       }
     };
 
     init();
   }, [loadThreads, activeThreadId]);
+
+  // Global Keyboard Shortcuts (⌘K / Ctrl+K for Thread Constellation)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setThreadDrawerOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Load message history when active thread changes
   useEffect(() => {
@@ -116,11 +136,24 @@ export default function Home() {
     };
   }, [activeThreadId]);
 
-  // Stream completion callback
+  // Stream completion handler
   const handleStreamDone = useCallback(
-    async (threadId: string, titleUpdated: boolean) => {
+    async (
+      threadId: string,
+      titleUpdated: boolean,
+      cached?: boolean,
+      similarity?: number
+    ) => {
       try {
         const updatedMsgs = await fetchThreadMessages(threadId);
+        // Tag latest assistant message with cache metadata if hit
+        if (cached && updatedMsgs.length > 0) {
+          const lastIdx = updatedMsgs.length - 1;
+          if (updatedMsgs[lastIdx].role === "assistant") {
+            updatedMsgs[lastIdx].cached = true;
+            updatedMsgs[lastIdx].similarity = similarity;
+          }
+        }
         setMessages(updatedMsgs);
       } catch (err) {
         console.error("Failed to rehydrate messages:", err);
@@ -155,7 +188,7 @@ export default function Home() {
     },
   });
 
-  // Authentication callbacks
+  // Auth Callbacks
   const handleAuthSuccess = async (user: User) => {
     setCurrentUser(user);
     setAuthModalOpen(false);
@@ -177,7 +210,7 @@ export default function Home() {
     setAuthModalOpen(true);
   };
 
-  // New Thread
+  // Thread Operations
   const handleNewThread = async () => {
     if (!currentUser) {
       setAuthModalOpen(true);
@@ -193,7 +226,6 @@ export default function Home() {
     }
   };
 
-  // Delete Thread
   const handleDeleteThread = async (threadId: string) => {
     try {
       await deleteThread(threadId);
@@ -213,7 +245,6 @@ export default function Home() {
     }
   };
 
-  // Update Title
   const handleUpdateTitle = async (threadId: string, newTitle: string) => {
     try {
       await updateThreadTitle(threadId, newTitle);
@@ -225,7 +256,7 @@ export default function Home() {
     }
   };
 
-  // Send message flow
+  // Transmission flow
   const handleSendMessage = async (text: string) => {
     if (!currentUser) {
       setAuthModalOpen(true);
@@ -260,53 +291,108 @@ export default function Home() {
     await startStream(targetThreadId, trimmed);
   };
 
-  // Resume interrupted flow (HITL)
   const handleResumeInterrupt = async (decision: unknown) => {
     if (!activeThreadId) return;
     await resumeStream(activeThreadId, decision);
   };
 
+  const handleSendToCanvas = (content: string, title?: string) => {
+    setActiveArtifact({
+      text: content,
+      title: title || "Extracted Knowledge Artifact",
+    });
+    setCanvasOpen(true);
+  };
+
   const activeThread = threads.find((t) => t.thread_id === activeThreadId);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#090a0f] text-zinc-100 antialiased font-sans">
-      <Sidebar
+    <div className="flex h-screen w-screen overflow-hidden bg-[#06070a] text-zinc-100 antialiased font-sans ambient-matrix-bg relative">
+      {/* Background Dot Matrix Texture */}
+      <div className="absolute inset-0 ambient-dot-grid opacity-35 pointer-events-none" />
+
+      {/* Main Dynamic Viewport */}
+      <div className="flex-1 flex flex-col h-full min-w-0 relative z-10">
+        {/* Top Canopy */}
+        <HeaderCanopy
+          threadTitle={activeThread?.title || "New Thought Horizon"}
+          onRenameThread={(newTitle) => {
+            if (activeThreadId) handleUpdateTitle(activeThreadId, newTitle);
+          }}
+          onOpenThreadDrawer={() => setThreadDrawerOpen(true)}
+          onToggleCanvas={() => setCanvasOpen((prev) => !prev)}
+          isCanvasOpen={canvasOpen}
+          currentUser={currentUser}
+          onOpenAuth={() => setAuthModalOpen(true)}
+          onLogout={handleLogout}
+          backendOnline={backendOnline}
+          turnCount={messages.length}
+        />
+
+        {/* Global Error Notice */}
+        {error && (
+          <div className="bg-rose-950/60 border-b border-rose-500/30 px-4 py-2 flex items-center justify-between text-xs text-rose-200 z-20">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{error}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Main Dialogue & Cognitive Viewport */}
+        <div className="flex-1 flex min-h-0 overflow-hidden relative">
+          {/* Main Thought Stream */}
+          <main className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+            <ThoughtStream
+              messages={messages}
+              isStreaming={isStreaming}
+              streamingText={streamingText}
+              activeTools={activeTools}
+              interrupt={interrupt}
+              onResumeInterrupt={handleResumeInterrupt}
+              onSelectPrompt={(prompt) => {
+                setInput(prompt);
+                handleSendMessage(prompt);
+              }}
+              onSendToCanvas={handleSendToCanvas}
+            />
+
+            {/* Tactical Floating Command Deck */}
+            <CommandDeck
+              input={input}
+              setInput={setInput}
+              onSend={handleSendMessage}
+              onStop={stopStream}
+              isStreaming={isStreaming}
+              activeTools={activeTools}
+            />
+          </main>
+
+          {/* Dual-Horizon Workspace Canvas */}
+          <ArtifactCanvas
+            isOpen={canvasOpen}
+            onClose={() => setCanvasOpen(false)}
+            activeArtifactText={activeArtifact.text}
+            activeArtifactTitle={activeArtifact.title}
+            messages={messages}
+            threadId={activeThreadId || ""}
+          />
+        </div>
+      </div>
+
+      {/* Thread Constellation Slide-over Drawer */}
+      <ThreadDrawer
+        isOpen={threadDrawerOpen}
+        onClose={() => setThreadDrawerOpen(false)}
         threads={threads}
         activeThreadId={activeThreadId}
         onSelectThread={(id) => setActiveThreadId(id)}
         onNewThread={handleNewThread}
         onDeleteThread={handleDeleteThread}
-        onUpdateTitle={handleUpdateTitle}
-        backendOnline={backendOnline}
-        isOpen={sidebarOpen}
-        onToggleOpen={() => setSidebarOpen((prev) => !prev)}
-        currentUser={currentUser}
-        onOpenAuth={() => setAuthModalOpen(true)}
-        onLogout={handleLogout}
       />
 
-      <ChatContainer
-        threadTitle={activeThread?.title || "New Conversation"}
-        messages={messages}
-        isStreaming={isStreaming}
-        streamingText={streamingText}
-        activeTools={activeTools}
-        interrupt={interrupt}
-        error={error}
-        input={input}
-        setInput={setInput}
-        onSend={handleSendMessage}
-        onStop={stopStream}
-        onResumeInterrupt={handleResumeInterrupt}
-        onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-        onSelectPrompt={(prompt) => {
-          setInput(prompt);
-          handleSendMessage(prompt);
-        }}
-      />
-
-      {/* Authentication Modal */}
-      <AuthModal
+      {/* Authentication Portal */}
+      <AuthPortal
         isOpen={authModalOpen}
         onClose={currentUser ? () => setAuthModalOpen(false) : undefined}
         onSuccess={handleAuthSuccess}

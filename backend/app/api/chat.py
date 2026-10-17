@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -17,6 +18,7 @@ from backend.app.graph.engine import get_chatbot
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+logger = logging.getLogger("chat_stream")
 
 _active_threads: set[str] = set()
 _threads_lock = asyncio.Lock()
@@ -271,7 +273,8 @@ async def chat_stream(
             yield f"event: done\ndata: {json.dumps({'thread_id': body.thread_id, 'title_updated': title_updated, 'interrupted': is_interrupted, 'cached': False})}\n\n"
 
         except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'message': 'Streaming failed'})}\n\n"
+            logger.exception("Error during chat stream: %s", e)
+            yield f"event: error\ndata: {json.dumps({'message': str(e) or 'Streaming failed'})}\n\n"
         finally:
             await release_thread(body.thread_id)
 
@@ -385,7 +388,8 @@ async def chat_resume(
             yield f"event: done\ndata: {json.dumps({'thread_id': body.thread_id, 'title_updated': False, 'interrupted': is_interrupted})}\n\n"
 
         except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'message': 'Resume stream failed'})}\n\n"
+            logger.exception("Error during resume stream: %s", e)
+            yield f"event: error\ndata: {json.dumps({'message': str(e) or 'Resume stream failed'})}\n\n"
         finally:
             await release_thread(body.thread_id)
 

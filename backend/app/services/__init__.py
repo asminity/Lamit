@@ -6,11 +6,18 @@ from backend.app.services.semantic_cache import (
     semantic_cache,
     SemanticCacheService,
 )
+from backend.app.services.memory_service import (
+    memory_service,
+    MemoryService,
+)
 
 __all__ = [
     "generate_title_with_ai",
     "async_generate_title_with_ai",
     "semantic_cache",
     "SemanticCacheService",
+    "memory_service",
+    "MemoryService",
 ]
+
 

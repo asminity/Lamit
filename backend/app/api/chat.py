@@ -14,7 +14,9 @@ from backend.app.schemas.chat import ChatStreamRequest, ChatResumeRequest
 from backend.app.schemas.cache import CacheEntryCreate
 from backend.app.services.title_service import async_generate_title_with_ai
 from backend.app.services.semantic_cache import semantic_cache
+from backend.app.services.memory_service import memory_service
 from backend.app.graph.engine import get_chatbot
+
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -180,9 +182,28 @@ async def chat_stream(
                 yield f"event: done\ndata: {json.dumps({'thread_id': body.thread_id, 'title_updated': title_updated, 'interrupted': False, 'cached': True, 'similarity': cache_result.similarity_score})}\n\n"
                 return
 
+            # Retrieve Long-Term Memory (LTM) context for prompt augmentation
+            memory_context = ""
+            if settings.LTM_ENABLED:
+                try:
+                    retrieved_memories = await memory_service.retrieve_memories(
+                        user_id=current_user.user_id,
+                        query=body.message.strip(),
+                    )
+                    if retrieved_memories:
+                        memory_context = memory_service.format_memories_for_prompt(retrieved_memories)
+                except Exception as e:
+                    logger.warning(f"Error retrieving memories for user {current_user.user_id}: {e}")
+
             # Cache Miss: Execute LangGraph pipeline
+            input_state = {
+                "messages": [HumanMessage(content=body.message.strip())],
+                "memory_context": memory_context,
+                "user_id": current_user.user_id,
+            }
+
             async for event in bot.astream_events(
-                {"messages": [HumanMessage(content=body.message.strip())]},
+                input_state,
                 config=config,
                 version="v2",
             ):
@@ -237,6 +258,17 @@ async def chat_stream(
                         )
                     assistant_persisted = True
 
+                    # Trigger asynchronous non-blocking LTM extraction
+                    if settings.LTM_ENABLED:
+                        asyncio.create_task(
+                            memory_service.extract_and_store_memories_async(
+                                user_id=current_user.user_id,
+                                thread_id=body.thread_id,
+                                user_message=body.message.strip(),
+                                assistant_message=final_text,
+                            )
+                        )
+
                     # Check eligibility and save to semantic cache asynchronously
                     if semantic_cache.is_response_cacheable(
                         tool_names=used_tools,
@@ -271,6 +303,7 @@ async def chat_stream(
                 title_updated = True
 
             yield f"event: done\ndata: {json.dumps({'thread_id': body.thread_id, 'title_updated': title_updated, 'interrupted': is_interrupted, 'cached': False})}\n\n"
+
 
         except Exception as e:
             logger.exception("Error during chat stream: %s", e)

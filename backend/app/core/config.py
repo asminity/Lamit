@@ -42,8 +42,18 @@ class Settings:
         "http://127.0.0.1:8000/api/auth/google/callback",
     )
 
-    # LangGraph Short-Term Memory
+    # LangGraph Short-Term Memory (STM)
     SUMMARY_TRIGGER: int = int(os.getenv("SUMMARY_TRIGGER", "12"))
+    STM_MAX_TOKENS: int = int(os.getenv("STM_MAX_TOKENS", "4000"))
+    STM_SUMMARY_TRIGGER_TOKENS: int = int(os.getenv("STM_SUMMARY_TRIGGER_TOKENS", "2500"))
+    STM_RECENT_MESSAGES_TOKEN_LIMIT: int = int(os.getenv("STM_RECENT_MESSAGES_TOKEN_LIMIT", "1200"))
+
+    # Long-Term Memory (LTM) Settings
+    LTM_ENABLED: bool = os.getenv("LTM_ENABLED", "true").lower() in ("true", "1", "yes")
+    LTM_SIMILARITY_THRESHOLD: float = float(os.getenv("LTM_SIMILARITY_THRESHOLD", "0.70"))
+    LTM_TOP_K: int = int(os.getenv("LTM_TOP_K", "6"))
+    LTM_IMPORTANCE_THRESHOLD: float = float(os.getenv("LTM_IMPORTANCE_THRESHOLD", "0.4"))
+    LTM_EXTRACTION_MODEL: str = os.getenv("LTM_EXTRACTION_MODEL", os.getenv("MODEL", "gpt-5.4-mini"))
 
     # Semantic Cache Settings
     SEMANTIC_CACHE_ENABLED: bool = os.getenv("SEMANTIC_CACHE_ENABLED", "true").lower() in ("true", "1", "yes")

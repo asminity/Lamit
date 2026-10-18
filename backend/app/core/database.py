@@ -192,17 +192,54 @@ async def setup_database_tables():
             except Exception:
                 _has_iterative_scan = False
 
-            logger.info(
-                f"pgvector HNSW index initialized successfully (dim={dim}, m={m}, ef_construction={ef_c}, "
-                f"iterative_scan={_has_iterative_scan})."
+        # 8. User Long-Term Memory (LTM) table and indexes
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_memories (
+                id                  BIGSERIAL PRIMARY KEY,
+                user_id             TEXT NOT NULL,
+                memory_type         TEXT NOT NULL,
+                content             TEXT NOT NULL,
+                structured_data     JSONB DEFAULT '{}'::jsonb,
+                importance          DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+                confidence          DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+                provenance          JSONB DEFAULT '{}'::jsonb,
+                is_active           BOOLEAN NOT NULL DEFAULT TRUE,
+                superseded_by       BIGINT REFERENCES user_memories(id) ON DELETE SET NULL,
+                embedding           DOUBLE PRECISION[],
+                created_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memories_user_type_active ON user_memories(user_id, memory_type, is_active);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memories_user_active ON user_memories(user_id, is_active);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memories_structured ON user_memories USING gin (structured_data);")
+
+        if _pgvector_active:
+            dim = settings.SEMANTIC_CACHE_EMBEDDING_DIMENSION
+            m = settings.SEMANTIC_CACHE_HNSW_M
+            ef_c = settings.SEMANTIC_CACHE_HNSW_EF_CONSTRUCTION
+
+            await conn.execute(f"ALTER TABLE user_memories ADD COLUMN IF NOT EXISTS embedding_vec vector({dim});")
+            await conn.execute(
+                """
+                UPDATE user_memories
+                SET embedding_vec = embedding::text::vector
+                WHERE embedding_vec IS NULL AND embedding IS NOT NULL;
+                """
             )
-        else:
-            logger.warning(
-                "pgvector extension is not available in PostgreSQL. Operating in resilient array fallback "
-                "mode with pre-filtered B-tree indexes and PL/pgSQL cosine similarity."
+            await conn.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_user_memories_hnsw
+                ON user_memories
+                USING hnsw (embedding_vec vector_cosine_ops)
+                WITH (m = {m}, ef_construction = {ef_c});
+                """
             )
 
-        logger.info("Database schemas verified and initialized.")
+        logger.info("Database schemas verified and initialized (including LTM user_memories).")
+
 
 
 _pgvector_active: bool = False

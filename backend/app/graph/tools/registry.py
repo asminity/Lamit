@@ -9,6 +9,7 @@ from .youtube_tool import youtube_tool
 from .stock_price import get_stock_price
 from .amazon_tool import amazon_tool
 from .gmail_tool import read_gmail_messages, send_gmail_message
+from .task_tool import manage_active_task
 
 
 tools = [
@@ -24,4 +25,5 @@ tools = [
     amazon_tool,
     read_gmail_messages,
     send_gmail_message,
-]
+    manage_active_task,
+]

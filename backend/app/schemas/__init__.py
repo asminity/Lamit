@@ -15,6 +15,14 @@ from backend.app.schemas.chat import (
     ChatStreamRequest,
     ChatResumeRequest,
 )
+from backend.app.schemas.memory import (
+    MemoryType,
+    MemoryItem,
+    MemoryCreateRequest,
+    MemoryUpdateRequest,
+    ExtractedMemory,
+    MemoryListResponse,
+)
 
 __all__ = [
     "UserSignupRequest",
@@ -28,4 +36,11 @@ __all__ = [
     "ChatHistoryResponse",
     "ChatStreamRequest",
     "ChatResumeRequest",
+    "MemoryType",
+    "MemoryItem",
+    "MemoryCreateRequest",
+    "MemoryUpdateRequest",
+    "ExtractedMemory",
+    "MemoryListResponse",
 ]
+

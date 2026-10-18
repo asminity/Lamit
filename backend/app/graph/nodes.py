@@ -4,6 +4,7 @@ from langchain_openai import ChatOpenAI
 from backend.app.core.config import settings
 from backend.app.graph.state import ChatState
 from backend.app.graph.tools.registry import tools
+from backend.app.graph.tokens import partition_messages_for_summary
 
 # LLM bound with tools
 chat_llm = ChatOpenAI(
@@ -19,48 +20,98 @@ summary_llm = ChatOpenAI(
 
 async def chat_node(state: ChatState):
     """
-    Primary chat node: feeds summary context + working messages into LLM.
+    Primary chat node: feeds memory context + active task + rolling summary + working messages into LLM.
     """
-    messages = []
-    if state.get("summary"):
-        messages.append(
-            SystemMessage(content=f"Conversational History: {state['summary']}")
+    system_sections = []
+
+    if state.get("memory_context"):
+        system_sections.append(
+            f"### Long-Term Memory & User Profile Context:\n{state['memory_context']}"
         )
+
+    if state.get("active_task"):
+        task = state["active_task"]
+        if isinstance(task, dict):
+            task_lines = [f"- **{k.replace('_', ' ').capitalize()}**: {v}" for k, v in task.items()]
+            system_sections.append(f"### Current Active Task State:\n" + "\n".join(task_lines))
+        elif isinstance(task, str) and task.strip():
+            system_sections.append(f"### Current Active Task State:\n{task}")
+
+    if state.get("summary"):
+        system_sections.append(
+            f"### Compressed Previous Conversation Summary:\n{state['summary']}"
+        )
+
+    messages = []
+    if system_sections:
+        messages.append(SystemMessage(content="\n\n".join(system_sections)))
     messages.extend(state["messages"])
+
     response = await chat_llm.ainvoke(messages)
     return {"messages": [response]}
 
 
 async def summarize_node(state: ChatState):
     """
-    Compresses older turns when message threshold is reached.
-    Emits RemoveMessage objects to truncate working context while preserving the last turn.
+    Compresses older turns when token or message threshold is reached.
+    Safely partitions messages to preserve tool-call/tool-result consistency.
+    Emits RemoveMessage objects to truncate working context while preserving recent complete turns.
     """
     existing_summary = state.get("summary", "")
+    working_messages = state.get("messages", [])
 
-    human_indices = [i for i, m in enumerate(state["messages"]) if isinstance(m, HumanMessage)]
-    split_idx = human_indices[-1] if human_indices else -2
-    messages_to_summarize = state["messages"][:split_idx]
+    messages_to_summarize, remaining_messages = partition_messages_for_summary(
+        working_messages,
+        recent_token_budget=settings.STM_RECENT_MESSAGES_TOKEN_LIMIT,
+        min_recent_turns=1,
+        model_name=settings.MODEL_NAME,
+    )
 
     if not messages_to_summarize:
         return {}
 
-    if existing_summary:
-        prompt = f"""
-Based on the given existing summary below, extend the summary by creating a precise summary of the existing summary and current conversation.
+    formatted_msgs = []
+    for m in messages_to_summarize:
+        role = getattr(m, "type", m.__class__.__name__)
+        content = getattr(m, "content", "")
+        if isinstance(content, str) and content.strip():
+            formatted_msgs.append(f"{role}: {content}")
+        elif getattr(m, "tool_calls", None):
+            formatted_msgs.append(f"assistant (tool_calls): {m.tool_calls}")
 
-existing_summary = {existing_summary}
-messages = {messages_to_summarize}
-"""
+    conversation_text = "\n".join(formatted_msgs)
+
+    if existing_summary:
+        prompt = f"""You are a conversation summarizer maintaining a rolling concise memory.
+Extend the existing summary by incorporating the older conversation turns below.
+Capture key facts, user preferences, tasks discussed, and tool outcomes. Keep it dense and informative.
+
+Existing Summary:
+{existing_summary}
+
+Older Conversation to Incorporate:
+{conversation_text}
+
+Produce an updated, cohesive summary:"""
     else:
-        prompt = f"""
-Create a precise summary of the given conversation.
-messages = {messages_to_summarize}
-"""
+        prompt = f"""You are a conversation summarizer maintaining a rolling concise memory.
+Create a precise, structured summary of the conversation turns below.
+Capture key facts, user preferences, tasks discussed, and tool outcomes. Keep it dense and informative.
+
+Conversation:
+{conversation_text}
+
+Produce a cohesive summary:"""
 
     response = await summary_llm.ainvoke(prompt)
+    summary_text = response.content if isinstance(response.content, str) else str(response.content)
+
+    remove_ops = [
+        RemoveMessage(id=m.id) for m in messages_to_summarize if getattr(m, "id", None)
+    ]
 
     return {
-        "summary": response.content,
-        "messages": [RemoveMessage(id=m.id) for m in messages_to_summarize if getattr(m, "id", None)],
+        "summary": summary_text.strip(),
+        "messages": remove_ops,
     }
+

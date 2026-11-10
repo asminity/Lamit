@@ -32,7 +32,7 @@ export default function Home() {
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [activeArtifact, setActiveArtifact] = useState<{ text: string; title: string }>({
     text: "",
-    title: "Workspace Canvas",
+    title: "Canvas",
   });
   const [backendOnline, setBackendOnline] = useState(false);
 
@@ -299,7 +299,7 @@ export default function Home() {
   const handleSendToCanvas = (content: string, title?: string) => {
     setActiveArtifact({
       text: content,
-      title: title || "Extracted Knowledge Artifact",
+      title: title || "Response",
     });
     setCanvasOpen(true);
   };
@@ -307,15 +307,10 @@ export default function Home() {
   const activeThread = threads.find((t) => t.thread_id === activeThreadId);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#06070a] text-zinc-100 antialiased font-sans ambient-matrix-bg relative">
-      {/* Background Dot Matrix Texture */}
-      <div className="absolute inset-0 ambient-dot-grid opacity-35 pointer-events-none" />
-
-      {/* Main Dynamic Viewport */}
-      <div className="flex-1 flex flex-col h-full min-w-0 relative z-10">
-        {/* Top Canopy */}
+    <div className="flex h-dvh w-full overflow-hidden bg-[#f7f8fc] text-slate-900 antialiased font-sans">
+      <div className="flex-1 flex flex-col h-full min-w-0">
         <HeaderCanopy
-          threadTitle={activeThread?.title || "New Thought Horizon"}
+          threadTitle={activeThread?.title || "New chat"}
           onRenameThread={(newTitle) => {
             if (activeThreadId) handleUpdateTitle(activeThreadId, newTitle);
           }}
@@ -326,16 +321,16 @@ export default function Home() {
           onOpenAuth={() => setAuthModalOpen(true)}
           onLogout={handleLogout}
           backendOnline={backendOnline}
-          turnCount={messages.length}
         />
 
         {/* Global Error Notice */}
         {error && (
-          <div className="bg-rose-950/60 border-b border-rose-500/30 px-4 py-2 flex items-center justify-between text-xs text-rose-200 z-20">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>{error}</span>
-            </div>
+          <div
+            role="alert"
+            className="flex items-center gap-2 border-b border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700"
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{error}</span>
           </div>
         )}
 

@@ -26,10 +26,9 @@ export function ThoughtStream({
   onSelectPrompt,
   onSendToCanvas,
 }: ThoughtStreamProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to latest turn as tokens stream in
+  // Keep the latest turn in view as tokens stream in
   useEffect(() => {
     if (bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: "smooth" });
@@ -43,49 +42,42 @@ export function ThoughtStream({
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col divide-y divide-white/[0.02]"
-    >
-      {/* Historical Turns */}
-      {messages.map((msg, idx) => (
-        <ThoughtEpoch
-          key={msg.id || idx}
-          message={msg}
-          onSendToCanvas={onSendToCanvas}
-        />
-      ))}
+    <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      <div className="max-w-3xl mx-auto px-4 py-6 flex flex-col gap-6">
+        {messages.map((msg, idx) => (
+          <ThoughtEpoch
+            key={msg.id || idx}
+            message={msg}
+            onSendToCanvas={onSendToCanvas}
+          />
+        ))}
 
-      {/* Active Streaming Turn */}
-      {isStreaming && (
-        <ThoughtEpoch
-          message={{
-            thread_id: "",
-            role: "assistant",
-            content: streamingText,
-          }}
-          isStreaming={true}
-          activeTools={activeTools}
-          interrupt={interrupt}
-          onResumeInterrupt={onResumeInterrupt}
-          onSendToCanvas={onSendToCanvas}
-        />
-      )}
+        {/* Turn currently being generated */}
+        {isStreaming && (
+          <ThoughtEpoch
+            message={{
+              thread_id: "",
+              role: "assistant",
+              content: streamingText,
+            }}
+            isStreaming={true}
+            activeTools={activeTools}
+            interrupt={interrupt}
+            onResumeInterrupt={onResumeInterrupt}
+          />
+        )}
 
-      {/* Waiting Interrupt Approval (when not streaming new tokens) */}
-      {!isStreaming && interrupt && (
-        <ThoughtEpoch
-          message={{
-            thread_id: "",
-            role: "assistant",
-            content: "Action halted pending security clearance confirmation:",
-          }}
-          interrupt={interrupt}
-          onResumeInterrupt={onResumeInterrupt}
-        />
-      )}
+        {/* Approval request waiting after the stream paused */}
+        {!isStreaming && interrupt && (
+          <ThoughtEpoch
+            message={{ thread_id: "", role: "assistant", content: "" }}
+            interrupt={interrupt}
+            onResumeInterrupt={onResumeInterrupt}
+          />
+        )}
 
-      <div ref={bottomRef} className="h-4 shrink-0" />
+        <div ref={bottomRef} className="h-1 shrink-0" />
+      </div>
     </div>
   );
 }

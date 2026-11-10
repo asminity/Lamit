@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LangGraph Assistant | Modern AI Chatbot",
+  title: "Lamit",
   description:
     "Production-ready AI Chatbot powered by LangGraph, PostgreSQL Checkpointing, Short-Term Memory Summarization, and Tool Ecosystem.",
 };
@@ -26,9 +26,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} dark h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="h-full overflow-hidden bg-[#090a0f] text-zinc-100">
+      <body className="h-full overflow-hidden bg-[#f7f8fc] text-slate-900">
         {children}
       </body>
     </html>
